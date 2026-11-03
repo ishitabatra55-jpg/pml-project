@@ -1,0 +1,91 @@
+---
+title: "Predicting Barbell Lift Quality from Accelerometer Data"
+output:
+  html_document:
+    toc: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
+```
+
+## Overview
+
+Six people did barbell lifts while wearing accelerometers on the belt, forearm, arm and dumbbell. Each lift was done either correctly (class A) or in one of four common wrong ways (B to E). The goal here is to predict the `classe` variable from the sensor readings, estimate the out-of-sample error, and then predict 20 unlabelled test cases.
+
+Data source: Velloso, E. et al. *Qualitative Activity Recognition of Weight Lifting Exercises*, the Weight Lifting Exercise Dataset (groupware.les.inf.puc-rio.br/har).
+
+## Loading the data
+
+```{r load}
+library(caret)
+library(randomForest)
+
+train_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+test_url  <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+if (!file.exists("pml-training.csv")) download.file(train_url, "pml-training.csv")
+if (!file.exists("pml-testing.csv"))  download.file(test_url,  "pml-testing.csv")
+
+training <- read.csv("pml-training.csv", na.strings = c("NA", "", "#DIV/0!"))
+testing  <- read.csv("pml-testing.csv",  na.strings = c("NA", "", "#DIV/0!"))
+dim(training); dim(testing)
+```
+
+## Cleaning
+
+Most of the 160 columns are summary statistics that are only filled in on a few rows, so they are almost entirely `NA`. I drop any column that is more than 90% missing. I also drop the first seven columns (row number, user name, timestamps and window info), because they describe how the data was recorded, not the movement itself, and could let the model memorise things that won't carry over to new data.
+
+```{r clean}
+keep <- colMeans(is.na(training)) < 0.9
+training <- training[, keep]
+training <- training[, -(1:7)]
+training$classe <- factor(training$classe)
+dim(training)
+```
+
+That leaves 52 sensor features plus `classe`, with no missing values.
+
+## Model building and cross-validation
+
+I hold out 30% of the training data as a validation set that the model never sees during training. That set gives an honest estimate of the out-of-sample error.
+
+On the remaining 70% I fit a **random forest**. I chose it because it handles many correlated numeric predictors well, needs almost no tuning or scaling, and is usually very accurate on sensor data like this. Inside training, caret uses **5-fold cross-validation** to choose `mtry`, the number of variables tried at each split.
+
+```{r model}
+set.seed(1234)
+in_train <- createDataPartition(training$classe, p = 0.7, list = FALSE)
+train_set <- training[in_train, ]
+valid_set <- training[-in_train, ]
+
+ctrl <- trainControl(method = "cv", number = 5)
+fit  <- train(classe ~ ., data = train_set, method = "rf",
+              trControl = ctrl, ntree = 100)
+fit
+```
+
+## Expected out-of-sample error
+
+```{r validate}
+pred_valid <- predict(fit, valid_set)
+cm <- confusionMatrix(pred_valid, valid_set$classe)
+cm$table
+acc <- cm$overall["Accuracy"]
+acc
+```
+
+Accuracy on the held-out validation set is **`r round(100 * acc, 2)`%**, so the expected out-of-sample error is about **`r round(100 * (1 - acc), 2)`%**. The cross-validated accuracy during training was about the same, which suggests the model isn't overfitting.
+
+```{r importance, fig.width=7, fig.height=5}
+varImpPlot(fit$finalModel, n.var = 15, main = "Top 15 most important variables")
+```
+
+## Predicting the 20 test cases
+
+```{r predict}
+test_pred <- predict(fit, testing)
+data.frame(problem_id = testing$problem_id, prediction = test_pred)
+```
+
+## Conclusion
+
+A random forest on the 52 cleaned sensor features predicts the exercise class very accurately, with an expected out-of-sample error well under 1%. Its predictions for the 20 test cases are listed above and were used for the prediction quiz.
